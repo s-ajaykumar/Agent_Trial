@@ -2,65 +2,79 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from dotenv import load_dotenv
 from langchain.tools import tool
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.memory import InMemorySaver
 from config import DB_URI
 import asyncio 
+import sqlite3
+from langgraph.checkpoint.sqlite import SqliteSaver
+from pydantic import BaseModel, Field
 
 load_dotenv()
 
 
 # Prompt
-system_prompt = """You are an expert weather forecaster.
+system_prompt = """You are a helpful assitant to the user.
 
-You have access to two tools:
+1. If a user asks about his/her past moments, use the 'get_memory_book' tool.
+2. After you get the information from the tool, respond to the user query using that information. 
+"""
 
-- get_weather: use this to get the weather for a specific location
 
-If a user asks you for the weather of a city use the get_weather tool to find the weather and show the tool response to the user."""
-
+# Response model
+class ResponseModel(BaseModel):
+    """Past memory of the user"""
+    name: str = Field(description = 'Name of the user')
+    date: str = Field(description = 'Date of the moment')
+    temperature : int = Field(description = 'Temperature of the day')
+    description : str = Field(description = 'What happened on that day')
 
 # Tools
 @tool
-def get_weather(city: str) -> str:
-    """Get weather for a given city"""
-    return f"It's sunny in {city}"
+def get_memory_book() -> str:
+    """Get the memory book"""
+    book = open('tool_data.txt', 'r').read()
+    return book
 
 
 # Agent
 model = init_chat_model(
     'google_genai:gemini-2.5-flash-lite',
-    temperature = 0.01,
-    max_tokens = 1000
+    temperature = 0.5,
+    max_tokens = 2000
     )
 
 
 # Config
 config = {
     'configurable' : {
-        'thread_id' : 1
+        'thread_id' : 2
         }
     }
 
 
 # Inference
-async def main():
-    # Langgraph
-    print('Creating checkpointer...')
-    async with AsyncPostgresSaver.from_conn_string(DB_URI) as checkpointer:
-        await checkpointer.setup()    # Create tables
+def print_conversations(convs):
+    for conv in convs:
+        print(conv.content, '\n')
+
+
+def main():
+    with SqliteSaver.from_conn_string('chat_history.db') as checkpointer:
+        # checkpointer.setup()
+        # Langgraph
         agent = create_agent(
             model = model,
-            tools = [get_weather],
+            tools = [get_memory_book],
             system_prompt = system_prompt,
-            checkpointer = checkpointer
+            checkpointer = checkpointer,
+            response_format = ResponseModel
         )
-        res = await agent.ainvoke(
-                {'messages' : [{'role' : 'user', 'content' : 'whats the weather in Madurai'}]},
+        res = agent.invoke(
+                {'messages' : [{'role' : 'user', 'content' : 'Where was I on 7'}]},
                 config = config
             )
-        print(res['messages'])
+        print(res['structured_response'])
 
 
-if __name__ == '__main__':
-    asyncio.run(main())
+main()
     
